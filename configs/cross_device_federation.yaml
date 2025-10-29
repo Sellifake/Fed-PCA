@@ -1,0 +1,229 @@
+# Cross-Device Federated Learning Configuration for Fed-ProFiLA-AD
+# 跨设备联邦学习配置文件
+
+# 数据集配置
+dataset:
+  name: "cross_device_mimii"
+  root_path: "data"
+  
+  # 客户端配置
+  clients:
+    - client_id: "id_00"
+      device_type: "fan"
+      data_source: "mimii_due"
+      data_path: "data/mimii_due_fan_0db/id_00"
+      expected_samples: 1418
+      
+    - client_id: "id_02"
+      device_type: "fan"
+      data_source: "mimii_due"
+      data_path: "data/mimii_due_fan_0db/id_02"
+      expected_samples: 1375
+      
+    - client_id: "id_04"
+      device_type: "fan"
+      data_source: "mimii_due"
+      data_path: "data/mimii_due_fan_0db/id_04"
+      expected_samples: 1381
+      
+    - client_id: "id_06"
+      device_type: "fan"
+      data_source: "mimii_due"
+      data_path: "data/mimii_due_fan_0db/id_06"
+      expected_samples: 1377
+      
+    - client_id: "dev_fan"
+      device_type: "fan"
+      data_source: "mimii_dev"
+      data_path: "data/mimii_dev_fan"
+      expected_samples: 3600
+      
+    - client_id: "dev_valve"
+      device_type: "valve"
+      data_source: "mimii_dev"
+      data_path: "data/mimii_dev_valve"
+      expected_samples: 3600
+  
+  # 音频预处理参数
+  audio:
+    sample_rate: 16000
+    segment_length: 4096
+    n_mels: 128
+    hop_length: 512
+    n_fft: 1024
+  
+  # 数据增强配置（针对不同设备类型）
+  augmentation:
+    fan_devices:
+      time_stretch: [0.9, 1.1]
+      volume_change: [-6, 6]  # dB
+      noise_snr: [20, 40]     # dB
+      spectral_mask: true
+    valve_devices:
+      time_stretch: [0.95, 1.05]  # 阀门对时间变化更敏感
+      volume_change: [-3, 3]      # dB
+      noise_snr: [25, 45]         # dB
+      spectral_mask: false
+
+# 模型配置
+model:
+  backbone_type: "dcase"  # "default" 或 "dcase"
+  input_channels: 1
+  feature_dim: 128
+  prototype_dim: 128
+  dropout_rate: 0.1
+  
+  # 适配器配置
+  adapter:
+    hidden_channels: 32
+    output_channels: 64
+    kernel_size: 3
+    stride: 1
+    padding: 1
+  
+  # FiLM生成器配置
+  film_generator:
+    hidden_dims: [256, 512]
+  
+  # 设备感知配置
+  device_aware:
+    enabled: true
+    device_type_dim: 16
+    adaptive_lambda: true
+    max_lambda: 1.0
+
+# 联邦学习配置
+federation:
+  num_clients: 6
+  client_selection: "all"  # "all", "random", "device_type_balanced"
+  selection_fraction: 1.0
+  num_rounds: 10
+  local_epochs: 3
+  
+  # 跨设备特殊配置
+  cross_device:
+    enable_prototype_alignment: true
+    lambda_proto: 0.01
+    device_type_aware: true
+    adaptive_lambda: true
+    
+    # 设备类型平衡选择
+    device_type_balancing:
+      enabled: true
+      fan_clients: ["id_00", "id_02", "id_04", "id_06", "dev_fan"]
+      valve_clients: ["dev_valve"]
+      min_clients_per_type: 1
+
+# 训练配置
+training:
+  batch_size: 32
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  momentum: 0.9
+  scheduler: "cosine"  # "cosine", "step", "plateau"
+  warmup_epochs: 10
+  
+  # 优化器配置
+  optimizer: "adam"  # "adam", "sgd", "adamw"
+  adam_betas: [0.9, 0.999]
+  adam_eps: 1e-8
+  
+  # 梯度配置
+  gradient_clip: 1.0
+  gradient_accumulation: 1
+
+# 损失函数配置
+loss:
+  # 任务损失权重
+  task_weight: 1.0
+  
+  # 原型对齐损失配置
+  prototype_alignment:
+    enabled: true
+    base_lambda: 0.1
+    adaptive: true
+    device_type_weights:
+      fan: 0.1
+      valve: 0.2  # 阀门设备需要更强的对齐
+  
+  # 设备类型感知损失
+  device_aware:
+    enabled: true
+    device_type_loss_weight: 0.05
+    consistency_loss_weight: 0.02
+
+# 评估配置
+evaluation:
+  # 评估指标
+  metrics: ["auc", "f1", "precision", "recall", "ndcg"]
+  
+  # 评估频率
+  eval_frequency: 2  # 每2轮评估一次
+  
+  # 异常检测阈值
+  anomaly_detection:
+    threshold_method: "percentile"  # "percentile", "fixed", "adaptive"
+    threshold_value: 95  # 95th percentile
+    adaptive_window: 100  # 自适应阈值窗口大小
+  
+  # 跨设备评估
+  cross_device_eval:
+    enabled: true
+    device_type_eval: true
+    generalization_eval: true
+
+# 日志配置
+logging:
+  level: "INFO"
+  log_frequency: 1  # 每轮记录一次
+  checkpoint_frequency: 5  # 每5轮保存检查点
+  save_checkpoints: true
+
+# 输出配置
+output:
+  save_dir: "outputs"  # 输出目录
+  save_model: true  # 是否保存模型
+  save_history: true  # 是否保存训练历史
+  save_metrics: true  # 是否保存指标CSV
+  generate_plots: true  # 是否生成可视化图表
+  checkpoint_frequency: 5  # 每5轮保存一次检查点
+  
+  # 可视化配置
+  visualization:
+    enabled: true
+    plot_prototypes: true
+    plot_loss_curves: true
+    plot_device_performance: true
+
+# 系统配置
+system:
+  device: "cpu"  # 使用CPU
+  num_workers: 4
+  pin_memory: false
+  mixed_precision: false
+  
+  # 随机种子
+  seed: 42
+  
+  # 内存配置
+  max_memory_usage: 0.8  # 最大内存使用率
+  gradient_checkpointing: false
+
+# 实验配置
+experiment:
+  name: "cross_device_fed_profila_ad"
+  description: "Cross-device federated learning with Fed-ProFiLA-AD"
+  tags: ["federated_learning", "anomaly_detection", "cross_device", "mimii"]
+  
+  # 实验跟踪
+  tracking:
+    enabled: true
+    experiment_name: "cross_device_experiment"
+    run_name: "run_001"
+  
+  # 结果保存
+  results:
+    save_dir: "results/cross_device"
+    save_models: true
+    save_prototypes: true
+    save_metrics: true

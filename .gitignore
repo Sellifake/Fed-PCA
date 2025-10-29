@@ -1,0 +1,53 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Packaging
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Editor settings
+.vscode/
+.idea/
+*.code-workspace
+
+# Python tooling
+pip-wheel-metadata/
+.pytest_cache/
+.coverage
+cover/
+coverage.xml
+*.log
+logs/
+
+# Jupyter
+.ipynb_checkpoints
+
+# Datasets and large artifacts
+data/
+datasets/
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.gz
+*.rar
+*.7z
+*.h5
+*.hdf5
+*.npy
+*.npz
+*.pkl
+*.pt
+*.pth
+
+# OS generated
+.DS_Store
+Thumbs.db
