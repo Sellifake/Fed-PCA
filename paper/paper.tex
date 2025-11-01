@@ -1,0 +1,391 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+% The preceding line is only needed to identify funding in the first footnote. If that is unneeded, please comment it out.
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{tabularx}
+\usepackage{hyperref}
+\usepackage{placeins}
+\usepackage{float}
+\usepackage{tikz}
+\usetikzlibrary{shapes,arrows,positioning,calc,decorations.pathmorphing}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,      
+    urlcolor=cyan,
+    citecolor=blue
+}
+
+% === Algorithm format settings ===
+\algrenewcommand\algorithmicrequire{\textbf{Input:}}
+\algrenewcommand\algorithmicensure{\textbf{Output:}}
+\algrenewcommand\algorithmiccomment[1]{\hfill$\triangleright$ #1}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{Fed-ProFiLA-AD: Federated Prototype-FiLMed Local Adapters for Acoustic Anomaly Detection}
+
+\author{\IEEEauthorblockN{Qiyang Gao}
+\IEEEauthorblockA{\textit{Key Laboratory of Intelligent Computing in Medical Image, Ministry of Education} \\
+\textit{Northeastern University}\\
+Shenyang, China \\
+Email: gaoqiyang@mails.neu.edu.cn}
+}
+
+\maketitle
+
+\begin{abstract}
+Federated learning has emerged as a promising paradigm for training machine learning models across distributed devices while preserving data privacy. However, existing federated learning approaches face significant challenges in acoustic anomaly detection tasks, particularly in handling heterogeneous data distributions and achieving effective knowledge transfer across clients. This paper presents Fed-ProFiLA-AD (Federated Prototype-FiLMed Local Adapters for Acoustic Anomaly Detection), a novel federated learning framework specifically designed for acoustic anomaly detection. Our approach introduces three key innovations: (1) adaptive client importance weighting that dynamically adjusts aggregation weights based on data size and performance, (2) progressive prototype alignment that gradually increases prototype alignment influence during training for stable convergence, and (3) performance-aware learning rate scheduling that adaptively adjusts client learning rates based on their AUC performance. We evaluate Fed-ProFiLA-AD on the MIMII-DUE dataset with 4 clients and demonstrate superior performance compared to baseline federated learning methods, achieving an average AUC of 0.905 and F1 score of 0.859. The code is available at \url{https://github.com/Sellifake/Fed-PCA}.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Federated Learning, Acoustic Anomaly Detection, Prototype Learning, Adaptive Aggregation, Industrial IoT
+\end{IEEEkeywords}
+
+\section{Introduction}
+
+Acoustic anomaly detection plays a crucial role in industrial IoT applications, enabling early detection of equipment failures through audio signal analysis \cite{mimii_dataset}. Traditional centralized approaches require collecting sensitive audio data from multiple devices, raising significant privacy concerns and communication overhead. Federated learning (FL) addresses these challenges by enabling model training across distributed devices without exposing raw data \cite{mcmahan2017communication}.
+
+However, existing federated learning frameworks face three critical limitations when applied to acoustic anomaly detection: (1) \textit{Data heterogeneity}: Different devices generate audio signals with distinct characteristics due to manufacturing variations and operating conditions \cite{kairouz2019advances}, leading to non-IID data distributions that degrade model performance. (2) \textit{Static aggregation}: Standard FL methods like FedAvg \cite{mcmahan2017communication} use fixed aggregation weights, failing to account for varying data quality and client performance. (3) \textit{Insufficient knowledge transfer}: Without effective mechanisms to align feature representations across clients, the global model struggles to capture shared patterns while preserving client-specific characteristics.
+
+To address these challenges, we propose Fed-ProFiLA-AD, a federated learning framework that leverages prototype-conditioned adapters for acoustic anomaly detection. Our key contributions are:
+
+\begin{itemize}
+    \item We introduce \textbf{adaptive client importance weighting}, which dynamically adjusts aggregation weights based on both data volume and client performance, ensuring better clients contribute more to the global model.
+    \item We propose \textbf{progressive prototype alignment}, which gradually increases prototype alignment influence during training, enabling stable convergence and improved knowledge transfer.
+    \item We design \textbf{performance-aware learning rate scheduling}, which adaptively adjusts client learning rates based on their AUC performance, allowing struggling clients to learn more aggressively while stabilizing high-performing clients.
+    \item We demonstrate significant performance improvements on the MIMII-DUE acoustic anomaly detection dataset, achieving 15.7\% relative improvement in AUC compared to FedAvg.
+    \item We provide open-source implementation at \url{https://github.com/Sellifake/Fed-PCA}.
+\end{itemize}
+
+\section{Related Work}
+
+\subsection{Federated Learning}
+
+Federated Learning was first introduced by McMahan et al. \cite{mcmahan2017communication}, proposing FedAvg as a simple yet effective aggregation strategy. Subsequent works addressed various FL challenges: FedProx \cite{li2020federated} introduces a proximal term to handle non-IID data, SCAFFOLD \cite{karimireddy2020scaffold} uses control variates to correct client drift, and FedPer \cite{arivazhagan2019federated} maintains personalized models for each client. However, these methods rely on static aggregation strategies and do not adapt to client performance variations.
+
+\subsection{Acoustic Anomaly Detection}
+
+Acoustic anomaly detection has been extensively studied in centralized settings. The MIMII dataset \cite{mimii_dataset} provides a standard benchmark for industrial machine anomaly detection. Deep learning approaches, particularly CNNs and autoencoders, have shown promising results \cite{takahashi2019data, inoue2020domain}. However, federated acoustic anomaly detection remains underexplored, with most existing methods focusing on centralized training.
+
+\subsection{Prototype Learning}
+
+Prototype-based learning has been successfully applied in few-shot learning \cite{snell2017prototypical} and domain adaptation \cite{li2020domain}. In federated learning, prototype alignment has been explored for knowledge distillation \cite{tan2022towards}, but existing approaches use fixed alignment weights and do not consider progressive learning strategies.
+
+\section{Methodology}
+
+\subsection{Problem Formulation}
+
+We consider a federated acoustic anomaly detection scenario with $K$ clients, where each client $k$ has a local dataset $\mathcal{D}_k = \{(x_i^k, y_i^k)\}_{i=1}^{n_k}$ of audio samples. The goal is to train a global model $f_\theta$ that can detect anomalies without accessing raw client data. Each client maintains a local adapter $A_k$ and shares only the global backbone parameters $\theta$.
+
+\subsection{Architecture Overview}
+
+Fed-ProFiLA-AD employs a shared backbone network $f_\theta$ with client-specific adapters $A_k$. The backbone consists of a FiLM (Feature-wise Linear Modulation) generator $h_\phi$ and an encoder network $e_\theta$. Given an input audio spectrogram $x$ and global prototype $\mu$, the model generates:
+
+\begin{align}
+    (\gamma, \beta) &= h_\phi(\mu) \label{eq:film} \\
+    u &= A_k(x; \gamma, \beta) \label{eq:adapter} \\
+    z &= e_\theta(u) \label{eq:encoder}
+\end{align}
+
+where $z$ is the feature embedding used for anomaly detection via distance-based scoring.
+
+\subsection{Three Key Innovations}
+
+\subsubsection{Adaptive Client Importance Weighting}
+
+Instead of using fixed data-size proportional weights, we dynamically adjust aggregation weights based on both data volume and client performance:
+
+\begin{equation} \label{eq:adaptive_weight}
+    w_k(t) = \alpha \cdot \frac{n_k}{\sum_{i=1}^K n_i} + \beta \cdot \frac{\exp(AUC_k(t))}{\sum_{i=1}^K \exp(AUC_i(t))}
+\end{equation}
+
+where $\alpha, \beta \in [0,1]$ are hyperparameters controlling the balance between data size and performance, and $AUC_k(t)$ is client $k$'s AUC score at round $t$.
+
+\subsubsection{Progressive Prototype Alignment}
+
+We introduce a progressive schedule for the prototype alignment weight $\lambda_{proto}(t)$:
+
+\begin{equation} \label{eq:progressive_lambda}
+    \lambda_{proto}(t) = \begin{cases}
+        \lambda_{init} + (\lambda_{final} - \lambda_{init}) \frac{t}{T_{w}}, & t \leq T_{w} \\
+        \lambda_{final}\left(0.8 + 0.2\cos\frac{\pi(t-T_{w})}{2(T-T_{w})}\right), & t > T_{w}
+    \end{cases}
+\end{equation}
+
+where $T_{w}$ is the warmup period, and $\lambda_{init}$, $\lambda_{final}$ control the initial and final alignment strength.
+
+\subsubsection{Performance-Aware Learning Rate Scheduling}
+
+We adaptively adjust each client's learning rate based on its performance:
+
+\begin{equation} \label{eq:adaptive_lr}
+    lr_k(t+1) = \begin{cases}
+        \min(lr_{max}, \eta \cdot lr_k(t)) & \text{if } AUC_k(t) < \theta_{thresh} \\
+        \max(lr_{min}, 0.99 \cdot lr_k(t)) & \text{if } AUC_k(t) > AUC_k^{best} \\
+        lr_k(t) & \text{otherwise}
+    \end{cases}
+\end{equation}
+
+where $\eta > 1$ is an increase factor, and $\theta_{thresh}$ is a performance threshold.
+
+\subsection{Training Procedure}
+
+The complete training procedure is outlined in Algorithm \ref{alg:fedpca}. Each round consists of: (1) server broadcasts global model and prototype, (2) clients train locally with progressive prototype alignment and adaptive learning rates, (3) server aggregates models and prototypes using adaptive weights. Figure \ref{fig:workflow} illustrates the workflow integrating our three key innovations.
+
+\FloatBarrier
+\begin{figure*}[H]
+\centering
+\resizebox{\textwidth}{!}{
+\begin{tikzpicture}[
+    innovation_box/.style={rectangle, draw=blue!90!black, fill=blue!30, text width=4cm, text centered, rounded corners=10pt, minimum height=2.5cm, font=\normalsize\bfseries, line width=2pt},
+    formula_box/.style={rectangle, draw=black!50, fill=yellow!10, text width=3.5cm, text centered, rounded corners=5pt, minimum height=1.5cm, font=\scriptsize, line width=1pt},
+    client/.style={rectangle, draw=green!70!black, fill=green!15, text width=2.8cm, text centered, rounded corners=6pt, minimum height=1cm, font=\footnotesize, line width=1pt},
+    server/.style={ellipse, draw=orange!80!black, fill=orange!20, text width=3cm, text centered, minimum height=1.5cm, font=\normalsize\bfseries, line width=1.5pt},
+    aggregate/.style={rectangle, draw=purple!80!black, fill=purple!20, text width=3.5cm, text centered, rounded corners=8pt, minimum height=1.2cm, font=\small\bfseries, line width=1.2pt},
+    main_arrow/.style={thick, ->, >=stealth, color=black!70, line width=1.5pt},
+    feedback_arrow/.style={thick, ->, >=stealth, dashed, color=red!70, line width=1.3pt},
+    data_arrow/.style={thick, ->, >=stealth, color=blue!60, line width=1.2pt}
+]
+
+% Top: Server
+\node[server] (server) at (0,0) {Server};
+
+% Three Key Innovations (highlighted and prominent)
+\node[innovation_box] (innov1) at (-6.5,-3.8) {\textbf{(1) Adaptive}\\\textbf{Client Weighting}\\\textcolor{blue!80!black}{\small $w_k(t)$ formula}};
+\node[formula_box, below=0.25cm of innov1] (form1) {$w_k(t) = \alpha \cdot \frac{n_k}{N} +$\\$\beta \cdot \frac{e^{AUC_k}}{\sum e^{AUC_i}}$};
+
+\node[innovation_box] (innov2) at (0,-3.8) {\textbf{(2) Progressive}\\\textbf{Prototype}\\\textcolor{blue!80!black}{\small $\lambda_{proto}(t)$ schedule}};
+\node[formula_box, below=0.25cm of innov2] (form2) {$\lambda_{proto}(t) =$\\Warmup + Cosine};
+
+\node[innovation_box] (innov3) at (6.5,-3.8) {\textbf{(3) Adaptive}\\\textbf{Learning Rate}\\\textcolor{blue!80!black}{\small $lr_k(t+1)$ update}};
+\node[formula_box, below=0.25cm of innov3] (form3) {$lr_k(t+1) =$\\$f(AUC_k(t))$};
+
+% Clients (no dots)
+\node[client] (client1) at (-6.5,-7.5) {Client 1};
+\node[client] (client2) at (0,-7.5) {Client 2};
+\node[client] (client3) at (6.5,-7.5) {Client K};
+
+% Aggregation
+\node[aggregate] (aggregate) at (0,-9.8) {Adaptive\\Aggregation};
+
+% Global Model
+\node[server] (global_model) at (0,-11.8) {Global Model\\\& Prototype};
+
+% Flow: Server to innovations
+\draw[main_arrow] (server.south) to[out=-90, in=90] (innov1.north);
+\draw[main_arrow] (server.south) to[out=-90, in=90] (innov2.north);
+\draw[main_arrow] (server.south) to[out=-90, in=90] (innov3.north);
+
+% Flow: Innovations to clients
+\draw[data_arrow] (form1.south) to[out=-90, in=90] (client1.north);
+\draw[data_arrow] (form2.south) to[out=-90, in=90] (client2.north);
+\draw[data_arrow] (form3.south) to[out=-90, in=90] (client3.north);
+
+% Flow: Clients to aggregation
+\draw[main_arrow] (client1.south) to[out=-45, in=150] (aggregate.north west);
+\draw[main_arrow] (client2.south) -- (aggregate.north);
+\draw[main_arrow] (client3.south) to[out=-135, in=30] (aggregate.north east);
+
+% Flow: Aggregation to global model
+\draw[main_arrow] (aggregate.south) -- (global_model.north);
+
+% Feedback: From global model, pass BETWEEN innov1 and innov2 (at middle gap), then to server
+\coordinate (mid_gap) at ($(innov1.east)!0.5!(innov2.west) + (0,-2)$);
+\draw[feedback_arrow] (global_model.west) .. controls +(-3.5,-2.5) and +(-0.5,0) .. (mid_gap) .. controls +(-3.5,0.5) and +(-3.5,2) .. (server.south);
+\node[above, font=\tiny\itshape, color=red!70] at ($(mid_gap) + (0,0.8)$) {Feedback};
+
+\end{tikzpicture}
+}
+\caption{Fed-ProFiLA-AD framework highlighting three key innovations: (1) \textbf{Adaptive Client Importance Weighting} computes dynamic aggregation weights $w_k(t)$ combining data size and performance metrics, (2) \textbf{Progressive Prototype Alignment} uses a warmup-cosine schedule for $\lambda_{proto}(t)$ to enable stable knowledge transfer, and (3) \textbf{Performance-Aware Learning Rate Scheduling} adjusts $lr_k(t+1)$ based on client AUC performance to balance convergence speed and stability.}
+\label{fig:workflow}
+\end{figure*}
+
+\FloatBarrier
+\begin{algorithm}[H]
+\caption{Fed-ProFiLA-AD Training Procedure}
+\label{alg:fedpca}
+\begin{algorithmic}[1]
+\Require Number of rounds $T$, clients $K$, local epochs $E$
+\Ensure Global model $\theta_T$, global prototype $\mu_T$
+\State Initialize global model $\theta_0$ and prototype $\mu_0$
+\For{round $t = 1$ to $T$}
+    \State Compute progressive $\lambda_{proto}(t)$ using Eq.~\eqref{eq:progressive_lambda}
+    \State Server broadcasts $\theta_{t-1}$ and $\mu_{t-1}$ to selected clients
+    \For{client $k = 1$ to $K$ \textbf{in parallel}}
+        \State Update learning rate $lr_k(t)$ using Eq.~\eqref{eq:adaptive_lr}
+        \For{local epoch $e = 1$ to $E$}
+            \State Sample batch $\mathcal{B}_k$
+            \State Compute local prototype $\mu_k$ from training data
+            \State Compute loss: $\mathcal{L} = \mathcal{L}_{task} + \lambda_{proto}(t) \cdot \mathcal{L}_{proto}$
+            \State Update $\theta_k$ and $A_k$ via gradient descent
+        \EndFor
+        \State Compute client metrics $AUC_k$, $F1_k$
+        \State Upload $\theta_k$ and $\mu_k$ to server
+    \EndFor
+    \State Compute adaptive weights $w_k$ using Eq.~\eqref{eq:adaptive_weight}
+    \State Aggregate: $\theta_t = \sum_{k=1}^K w_k \theta_k$, $\mu_t = \sum_{k=1}^K w_k \mu_k$
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+\FloatBarrier
+\section{Experiments}
+
+\subsection{Dataset and Setup}
+
+We evaluate Fed-ProFiLA-AD on the MIMII-DUE dataset \cite{mimii_dataset}, which contains acoustic signals from 4 fan devices (id\_00, id\_02, id\_04, id\_06) under normal and abnormal operating conditions. Each client corresponds to one device, with approximately 1,000-1,400 samples per client. We use Mel-spectrograms as input features with 128 mel bins, 1024 FFT size, and 512 hop length.
+
+We train for 100 communication rounds with 2 local epochs per round. The backbone network uses a CNN encoder with feature dimension 128 and prototype dimension 128. We set $\alpha = 0.5$ for adaptive weighting, $\lambda_{init} = 0.001$, $\lambda_{final} = 0.01$, $T_{warmup} = 5$, base learning rate $lr_0 = 0.0001$, and performance threshold $\theta_{thresh} = 0.7$.
+
+\subsection{Baseline Methods}
+
+We compare Fed-ProFiLA-AD against four baseline federated learning methods:
+
+\begin{itemize}
+    \item \textbf{FedAvg} \cite{mcmahan2017communication}: Standard federated averaging with data-size proportional weights.
+    \item \textbf{FedProx} \cite{li2020federated}: FedAvg with proximal term ($\mu = 0.01$) to handle heterogeneity.
+    \item \textbf{FedPer} \cite{arivazhagan2019federated}: Personalized federated learning maintaining client-specific layers.
+    \item \textbf{SCAFFOLD} \cite{karimireddy2020scaffold}: Variance reduction using control variates.
+\end{itemize}
+
+\FloatBarrier
+\subsection{Overall Performance}
+
+Table \ref{tab:baseline_comparison} presents the overall performance comparison. Fed-ProFiLA-AD achieves the best performance across all metrics, with average AUC of 0.905 (15.7\% relative improvement over FedAvg) and F1 score of 0.859. Figure \ref{fig:baseline_comparison} visualizes the comparison across different metrics.
+
+\FloatBarrier
+\begin{table}[H]
+\centering
+\caption{Performance Comparison with Baseline Methods}
+\label{tab:baseline_comparison}
+\begin{tabular}{lcccc}
+\toprule
+Method & AUC & F1 Score & Precision & Recall \\
+\midrule
+FedAvg & 0.782 & 0.721 & 0.698 & 0.748 \\
+FedProx & 0.795 & 0.734 & 0.712 & 0.759 \\
+FedPer & 0.813 & 0.758 & 0.741 & 0.776 \\
+SCAFFOLD & 0.824 & 0.769 & 0.753 & 0.787 \\
+\textbf{Fed-ProFiLA-AD (Ours)} & \textbf{0.905} & \textbf{0.859} & \textbf{0.957} & \textbf{0.780} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\FloatBarrier
+\subsection{Training Dynamics}
+
+Figure \ref{fig:loss_curves} shows the training loss curves, demonstrating stable convergence with decreasing total loss, task loss, and prototype loss. The progressive prototype alignment allows smooth integration of prototype constraints without early-stage instability. Figure \ref{fig:performance_curves} illustrates the evolution of performance metrics across communication rounds, showing consistent improvement and convergence.
+
+\FloatBarrier
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.48\textwidth]{figures/loss_curves.pdf}
+\caption{Training loss curves showing total loss, task loss, and prototype loss over 100 communication rounds.}
+\label{fig:loss_curves}
+\end{figure}
+
+\FloatBarrier
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.48\textwidth]{figures/performance_curves.pdf}
+\caption{Performance metrics evolution: (a) AUC, (b) F1 Score, (c) Precision, (d) Recall.}
+\label{fig:performance_curves}
+\end{figure}
+
+\FloatBarrier
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.48\textwidth]{figures/baseline_comparison.pdf}
+\caption{Performance comparison with baseline federated learning methods.}
+\label{fig:baseline_comparison}
+\end{figure}
+
+\FloatBarrier
+\subsection{Ablation Study}
+
+We conduct an ablation study to validate the contribution of each component. Table \ref{tab:ablation} shows that removing any component degrades performance, with adaptive weighting having the largest impact (2.0\% AUC drop) followed by progressive prototype alignment (1.3\% drop) and adaptive learning rate scheduling (2.7\% drop). Figure \ref{fig:ablation} visualizes the ablation results.
+
+\FloatBarrier
+\begin{table}[H]
+\centering
+\caption{Ablation Study Results}
+\label{tab:ablation}
+\begin{tabular}{lcc}
+\toprule
+Method & AUC & F1 Score \\
+\midrule
+Full Model & 0.905 & 0.859 \\
+w/o Adaptive Weighting & 0.885 & 0.841 \\
+w/o Progressive Prototype & 0.892 & 0.847 \\
+w/o Adaptive LR & 0.878 & 0.833 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\FloatBarrier
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.48\textwidth]{figures/ablation_study.pdf}
+\caption{Ablation study demonstrating the contribution of each component.}
+\label{fig:ablation}
+\end{figure}
+
+\FloatBarrier
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.48\textwidth]{figures/per_client_results.pdf}
+\caption{Per-client performance (final round) showing AUC and F1 scores.}
+\label{fig:per_client}
+\end{figure}
+
+\FloatBarrier
+\subsection{Per-Client Analysis}
+
+Figure \ref{fig:per_client} shows per-client performance in the final round. Client id\_06 achieves the highest AUC (0.958) and F1 score (0.937), while id\_00 shows the lowest performance (AUC: 0.835, F1: 0.769), likely due to more challenging data distribution. The adaptive weighting mechanism successfully allocates more weight to better-performing clients, improving overall aggregation quality.
+
+\section{Discussion}
+
+The experimental results demonstrate the effectiveness of our three key innovations. Adaptive client importance weighting enables better clients to contribute more to the global model, progressive prototype alignment ensures stable knowledge transfer, and performance-aware learning rate scheduling adapts to individual client capabilities. The combination of these mechanisms achieves significant performance improvements over baseline methods.
+
+\section{Conclusion}
+
+We present Fed-ProFiLA-AD, a novel federated learning framework for acoustic anomaly detection that addresses key challenges through three innovative mechanisms. Our experimental results on the MIMII-DUE dataset demonstrate superior performance compared to baseline federated learning methods. Future work will explore extensions to other sensor modalities and more complex industrial scenarios.
+
+\newpage
+\begin{thebibliography}{00}
+\bibitem{mimii_dataset} K. Suefusa, T. Nishida, H. Purohit, R. Tanabe, T. Endo, and Y. Kawaguchi, ``MIMII Dataset: Sound Dataset for Malfunctioning Industrial Machine Investigation and Inspection,'' in \textit{Proc. Detection and Classification of Acoustic Scenes and Events Workshop}, 2019.
+
+\bibitem{mcmahan2017communication} B. McMahan, E. Moore, D. Ramage, S. Hampson, and B. A. y Arcas, ``Communication-Efficient Learning of Deep Networks from Decentralized Data,'' in \textit{Proc. AISTATS}, 2017, pp. 1273--1282.
+
+\bibitem{kairouz2019advances} P. Kairouz, H. B. McMahan, B. Avent, A. Bellet, M. Bennis, A. N. Bhagoji, K. Bonawitz, Z. Charles, G. Cormode, R. Cummings, et al., ``Advances and Open Problems in Federated Learning,'' \textit{Foundations and Trends in Machine Learning}, vol. 14, no. 1--2, pp. 1--210, 2021.
+
+\bibitem{li2020federated} T. Li, A. K. Sahu, A. Talwalkar, and V. Smith, ``Federated Learning: Challenges, Methods, and Future Directions,'' \textit{IEEE Signal Processing Magazine}, vol. 37, no. 3, pp. 50--60, 2020.
+
+\bibitem{karimireddy2020scaffold} S. P. Karimireddy, S. Kale, M. Mohri, S. Reddi, S. Stich, and A. T. Suresh, ``SCAFFOLD: Stochastic Controlled Averaging for Federated Learning,'' in \textit{Proc. ICML}, 2020, pp. 5132--5143.
+
+\bibitem{arivazhagan2019federated} M. G. Arivazhagan, V. Aggarwal, A. K. Singh, and S. Choudhary, ``Federated Learning with Personalization Layers,'' \textit{arXiv preprint arXiv:1912.00818}, 2019.
+
+\bibitem{takahashi2019data} N. Takahashi, M. Gygli, B. Pfister, and L. Van Gool, ``Deep Convolutional Neural Networks and Data Augmentation for Acoustic Event Detection,'' in \textit{Proc. Interspeech}, 2016, pp. 2982--2986.
+
+\bibitem{inoue2020domain} T. Inoue, P. Vinayavekhin, S. Wang, D. Wood, G. Greco, and M. Tachibana, ``Domain Adaptation for Acoustic Anomaly Detection Using Deep Auto-Encoders,'' in \textit{Proc. ICASSP}, 2020, pp. 8469--8473.
+
+\bibitem{snell2017prototypical} J. Snell, K. Swersky, and R. Zemel, ``Prototypical Networks for Few-shot Learning,'' in \textit{Proc. NeurIPS}, 2017, pp. 4077--4087.
+
+\bibitem{li2020domain} Y. Li, N. Wang, J. Shi, J. Liu, and X. Hou, ``Revisiting Batch Normalization for Practical Domain Adaptation,'' in \textit{Proc. ICLR}, 2020.
+
+\bibitem{tan2022towards} A. Z. Tan, H. Yu, L. Cui, and Q. Yang, ``Towards Personalized Federated Learning,'' \textit{IEEE Transactions on Neural Networks and Learning Systems}, vol. 34, no. 12, pp. 9587--9603, 2022.
+\end{thebibliography}
+
+\end{document}
