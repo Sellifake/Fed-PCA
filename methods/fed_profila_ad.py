@@ -1,5 +1,5 @@
 """
-Fed-ProFiLA-AD Loss Functions and Utilities
+Fed-ProFiLA-AD Loss Functions and Utilities (基础版本)
 实现Fed-ProFiLA-AD的损失函数和工具函数
 """
 
@@ -12,11 +12,17 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _l2_normalize_rows(x: torch.Tensor) -> torch.Tensor:
+    """
+    对最后一维做L2归一化。
+    """
+    return F.normalize(x, p=2, dim=-1)
+
+
 def compute_task_loss(z_batch: torch.Tensor, mu_local: torch.Tensor) -> torch.Tensor:
     """
     计算任务损失 (紧凑性损失)
     将Normal样本的嵌入拉向本地原型
-    添加防坍塌机制：方差正则化和范数约束
     
     Args:
         z_batch: 批次特征嵌入 [batch_size, feature_dim]
@@ -25,25 +31,14 @@ def compute_task_loss(z_batch: torch.Tensor, mu_local: torch.Tensor) -> torch.Te
     Returns:
         torch.Tensor: 任务损失标量
     """
-    # 1. 紧凑性损失：特征到原型的距离
-    distances = torch.sum((z_batch - mu_local.unsqueeze(0)) ** 2, dim=1)
-    compactness_loss = torch.mean(distances)
+    # 归一化特征与原型，提升稳定性与可分性
+    z_batch = _l2_normalize_rows(z_batch)
+    mu_local = _l2_normalize_rows(mu_local.unsqueeze(0)).squeeze(0)
 
-    # 2. 方差正则化：防止所有特征坍塌到同一点
-    # 计算每一维的方差，要求整体方差不低于阈值
-    feature_var_per_dim = torch.var(z_batch, dim=0, unbiased=False)
-    min_var = 0.05  # 提高方差下限，鼓励表征动量
-    var_shortfall = torch.relu(min_var - feature_var_per_dim)
-    var_penalty = var_shortfall.mean() * 50.0  # 更强的权重以显著抑制坍塌
-
-    # 3. 特征范数正则化：鼓励特征模长保持在合理范围
-    feature_norms = torch.norm(z_batch, dim=1)
-    target_norm = 1.0
-    norm_shortfall = torch.relu(target_norm - feature_norms)
-    norm_penalty = norm_shortfall.mean() * 10.0
-
-    # 总任务损失 = 紧凑性 + 防坍塌项 + 范数约束
-    task_loss = compactness_loss + var_penalty + norm_penalty
+    # 紧凑性损失：特征到原型的L2距离平方
+    diff = z_batch - mu_local.unsqueeze(0)  # [batch_size, feature_dim]
+    distances = torch.sum(diff ** 2, dim=1)  # [batch_size]
+    task_loss = torch.mean(distances)
     
     return task_loss
 
@@ -60,23 +55,127 @@ def compute_prototype_alignment_loss(mu_local: torch.Tensor, mu_global: torch.Te
     Returns:
         torch.Tensor: 原型对齐损失标量
     """
-    # 计算本地原型和全局原型之间的L2距离
+    # 归一化原型后计算距离
+    mu_local = _l2_normalize_rows(mu_local)
+    mu_global = _l2_normalize_rows(mu_global)
+
     diff = mu_local - mu_global
     proto_loss = torch.sum(diff ** 2)
     
-    # 添加小的epsilon避免数值不稳定
-    epsilon = 1e-8
-    proto_loss = proto_loss + epsilon
-    
     return proto_loss
+
+
+def compute_contrastive_loss(
+    z_batch: torch.Tensor,
+    y_batch: torch.Tensor,
+    mu_local: torch.Tensor,
+    margin: float = 0.8
+) -> torch.Tensor:
+    """
+    对比损失：
+    - 正样本(正常=0)：拉近到本地原型（与task一致，这里不重复计入，由task_loss负责）
+    - 负样本(异常=1)：推远离本地原型，采用hinge式 margin: relu(m - d)^2
+    """
+    if y_batch is None:
+        return torch.tensor(0.0, device=z_batch.device)
+    # 归一化
+    z_batch = _l2_normalize_rows(z_batch)
+    mu_local = _l2_normalize_rows(mu_local)
+
+    # 距离
+    diff = z_batch - mu_local
+    dists = torch.sqrt(torch.sum(diff ** 2, dim=1) + 1e-8)  # [B]
+
+    # 仅对异常样本计算push-away
+    mask_abn = (y_batch > 0.5).float()
+    if mask_abn.sum() == 0:
+        return torch.tensor(0.0, device=z_batch.device)
+
+    hinge = torch.relu(margin - dists)  # d < m 才有惩罚
+    loss_abn = (hinge ** 2) * mask_abn
+    return loss_abn.sum() / (mask_abn.sum() + 1e-8)
+
+
+def compute_batch_separation_loss(
+    z_batch: torch.Tensor,
+    y_batch: Optional[torch.Tensor],
+    margin: float = 0.8
+) -> torch.Tensor:
+    """
+    批内“正常中心 vs 异常样本”分离损失：
+    - 计算正常样本的批内中心 c_n
+    - 对每个异常样本，施加 hinge: relu(margin - ||z_abn - c_n||)^2
+    """
+    if y_batch is None:
+        return torch.tensor(0.0, device=z_batch.device)
+    # 归一化
+    z_batch = _l2_normalize_rows(z_batch)
+    y = (y_batch > 0.5).float()
+    mask_norm = (y == 0)
+    mask_abn = (y == 1)
+    if mask_norm.sum() == 0 or mask_abn.sum() == 0:
+        return torch.tensor(0.0, device=z_batch.device)
+    c_n = z_batch[mask_norm].mean(dim=0)
+    # 归一化中心
+    c_n = _l2_normalize_rows(c_n.unsqueeze(0)).squeeze(0)
+    z_abn = z_batch[mask_abn]
+    dists = torch.sqrt(torch.sum((z_abn - c_n.unsqueeze(0)) ** 2, dim=1) + 1e-8)
+    hinge = torch.relu(margin - dists)
+    return torch.mean(hinge ** 2)
+
+
+def compute_supervised_contrastive_loss(
+    z_batch: torch.Tensor,
+    y_batch: Optional[torch.Tensor],
+    temperature: float = 0.2
+) -> torch.Tensor:
+    """
+    监督式对比损失（SupCon）：同类为正样本、异类为负样本。
+    要求batch中同时存在至少两个类别，否则返回0。
+    参考: Supervised Contrastive Learning (Khosla et al., NeurIPS 2020)
+    """
+    if y_batch is None:
+        return torch.tensor(0.0, device=z_batch.device)
+    y = y_batch.view(-1)
+    if y.dim() != 1 or z_batch.size(0) < 2:
+        return torch.tensor(0.0, device=z_batch.device)
+    # 归一化
+    z = _l2_normalize_rows(z_batch)
+    # 相似度矩阵
+    sim = torch.matmul(z, z.t()) / max(1e-6, temperature)  # [B,B]
+    # 掩码
+    labels = (y > 0.5).long()
+    mask = torch.eq(labels.unsqueeze(0), labels.unsqueeze(1)).float().to(z.device)  # 同类为1
+    # 去除自身
+    logits_mask = torch.ones_like(mask) - torch.eye(mask.size(0), device=z.device)
+    mask = mask * logits_mask
+    # 归一化softmax分母
+    exp_sim = torch.exp(sim) * logits_mask
+    log_prob = sim - torch.log(exp_sim.sum(dim=1, keepdim=True) + 1e-12)
+    # 只对正样本对求平均
+    mean_log_prob_pos = (mask * log_prob).sum(dim=1) / (mask.sum(dim=1) + 1e-8)
+    loss = -mean_log_prob_pos.mean()
+    if not torch.isfinite(loss):
+        return torch.tensor(0.0, device=z.device)
+    return loss
 
 
 def compute_total_loss(
     z_batch: torch.Tensor,
     mu_local: torch.Tensor,
     mu_global: torch.Tensor,
-    lambda_proto: float = 0.1
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    lambda_proto: float = 0.01,
+    # 可选对比学习项
+    y_batch: Optional[torch.Tensor] = None,
+    lambda_contrastive: float = 0.5,
+    contrastive_margin: float = 0.8,
+    # 批内分离项
+    lambda_separation: float = 0.5,
+    separation_margin: float = 0.8,
+    # 监督式对比
+    lambda_supcon: float = 1.0,
+    temperature: float = 0.2
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     计算总损失
     
@@ -84,7 +183,7 @@ def compute_total_loss(
         z_batch: 批次特征嵌入 [batch_size, feature_dim]
         mu_local: 本地原型 [feature_dim]
         mu_global: 全局原型 [feature_dim]
-        lambda_proto: 原型对齐损失权重
+        lambda_proto: 原型对齐损失权重（默认0.01，较小值更稳定）
         
     Returns:
         Tuple[torch.Tensor, torch.Tensor, torch.Tensor]: (总损失, 任务损失, 原型对齐损失)
@@ -92,21 +191,34 @@ def compute_total_loss(
     # 计算任务损失
     task_loss = compute_task_loss(z_batch, mu_local)
     
-    # 计算原型对齐损失
+    # 计算原型对齐损失（只在训练时计算，不阻止梯度）
     proto_loss = compute_prototype_alignment_loss(mu_local, mu_global)
-    
+
+    # 计算对比损失（推远异常）
+    contrastive_loss = compute_contrastive_loss(z_batch, y_batch, mu_local, margin=contrastive_margin)
+    # 计算批内分离损失（异常远离正常中心）
+    separation_loss = compute_batch_separation_loss(z_batch, y_batch, margin=separation_margin)
+
+    # SupCon损失
+    supcon_loss = compute_supervised_contrastive_loss(z_batch, y_batch, temperature=temperature)
+
     # 计算总损失
-    total_loss = task_loss + lambda_proto * proto_loss
-    
-    return total_loss, task_loss, proto_loss
+    total_loss = (
+        task_loss
+        + lambda_proto * proto_loss
+        + lambda_contrastive * contrastive_loss
+        + lambda_separation * separation_loss
+        + lambda_supcon * supcon_loss
+    )
+
+    return total_loss, task_loss, proto_loss, contrastive_loss, separation_loss, supcon_loss
 
 
 def compute_local_prototype(
     model: nn.Module,
     dataloader: torch.utils.data.DataLoader,
     global_prototype: torch.Tensor,
-    device: torch.device,
-    device_type_id: int = 0
+    device: torch.device
 ) -> torch.Tensor:
     """
     计算本地原型
@@ -123,25 +235,46 @@ def compute_local_prototype(
     """
     model.eval()
     all_features = []
+    normal_count = 0
     
     with torch.no_grad():
-        for batch_data in dataloader:
-            # 解包数据（可能是2个或3个值）
-            if len(batch_data) == 3:
-                batch_x, batch_y, _ = batch_data  # 忽略device_type
+        for batch_x, batch_y in dataloader:
+            # 仅使用Normal样本(y==0)计算本地原型，避免异常样本污染
+            if isinstance(batch_y, torch.Tensor):
+                mask = (batch_y == 0)
             else:
-                batch_x, batch_y = batch_data
-            batch_x = batch_x.to(device)
-            
-            # 前向传播（使用设备类型ID而不是global_prototype）
-            device_type_id_tensor = torch.tensor([device_type_id] * batch_x.size(0), 
-                                                 dtype=torch.long, device=device)
-            features = model(batch_x, device_type_id_tensor)
+                # batch_y 可能是list/np，转为Tensor处理
+                mask = torch.tensor(batch_y, device='cpu') == 0
+            if mask.sum().item() == 0:
+                continue
+
+            batch_x = batch_x[mask].to(device)
+            global_prototype_batch = global_prototype.to(device)
+
+            features = model(batch_x, global_prototype_batch)
             all_features.append(features)
+            normal_count += batch_x.size(0)
     
-    # 计算平均特征作为本地原型
+    # 计算平均特征作为本地原型（对每个样本特征先归一化，再求均值，最后再归一化）
+    if len(all_features) == 0:
+        logger.warning("No normal features collected; falling back to using all samples if available")
+        # 回退：若训练批次无正常样本，则尝试用全部样本估计
+        with torch.no_grad():
+            for batch_x, _ in dataloader:
+                batch_x = batch_x.to(device)
+                global_prototype_batch = global_prototype.to(device)
+                features = model(batch_x, global_prototype_batch)
+                all_features.append(features)
+        if len(all_features) == 0:
+            logger.warning("No features collected at all, returning zero prototype")
+            return torch.zeros_like(global_prototype).to(device)
+    
     all_features = torch.cat(all_features, dim=0)
+    all_features = _l2_normalize_rows(all_features)
     local_prototype = torch.mean(all_features, dim=0)
+    local_prototype = _l2_normalize_rows(local_prototype)
+
+    logger.debug(f"Computed local prototype with {normal_count} normal samples, dim={local_prototype.shape[0]}")
     
     return local_prototype
 
@@ -165,8 +298,12 @@ def compute_anomaly_score(
     if mu_local.dim() == 1:
         mu_local = mu_local.unsqueeze(0)  # [1, feature_dim]
     
-    # 计算到本地原型的L2距离
-    distances = torch.sum((z_test - mu_local) ** 2, dim=1)
+    # 归一化后计算距离
+    z_test = _l2_normalize_rows(z_test)
+    mu_local = _l2_normalize_rows(mu_local)
+
+    diff = z_test - mu_local  # [batch_size, feature_dim]
+    distances = torch.sum(diff ** 2, dim=1)  # [batch_size]
     
     # 使用平方根使分数分布更合理
     distances = torch.sqrt(distances + 1e-8)
@@ -179,12 +316,12 @@ class FedProFiLALoss(nn.Module):
     Fed-ProFiLA-AD损失函数模块
     """
     
-    def __init__(self, lambda_proto: float = 0.1):
+    def __init__(self, lambda_proto: float = 0.01):
         """
         初始化损失函数
         
         Args:
-            lambda_proto: 原型对齐损失权重
+            lambda_proto: 原型对齐损失权重（默认0.01）
         """
         super(FedProFiLALoss, self).__init__()
         self.lambda_proto = lambda_proto
@@ -229,7 +366,10 @@ def aggregate_models(model_states: list, client_weights: list = None) -> dict:
     
     # 确保权重归一化
     total_weight = sum(client_weights)
-    client_weights = [w / total_weight for w in client_weights]
+    if total_weight == 0:
+        client_weights = [1.0 / len(model_states)] * len(model_states)
+    else:
+        client_weights = [w / total_weight for w in client_weights]
     
     # 获取所有参数键
     param_keys = model_states[0].keys()
@@ -241,12 +381,15 @@ def aggregate_models(model_states: list, client_weights: list = None) -> dict:
         # 计算加权平均
         weighted_sum = None
         for i, state in enumerate(model_states):
+            if key not in state:
+                continue
             if weighted_sum is None:
                 weighted_sum = client_weights[i] * state[key]
             else:
                 weighted_sum += client_weights[i] * state[key]
         
-        aggregated_state[key] = weighted_sum
+        if weighted_sum is not None:
+            aggregated_state[key] = weighted_sum
     
     return aggregated_state
 
@@ -271,7 +414,10 @@ def aggregate_prototypes(prototypes: list, client_weights: list = None) -> torch
     
     # 确保权重归一化
     total_weight = sum(client_weights)
-    client_weights = [w / total_weight for w in client_weights]
+    if total_weight == 0:
+        client_weights = [1.0 / len(prototypes)] * len(prototypes)
+    else:
+        client_weights = [w / total_weight for w in client_weights]
     
     # 计算加权平均
     weighted_sum = None
@@ -281,6 +427,8 @@ def aggregate_prototypes(prototypes: list, client_weights: list = None) -> torch
         else:
             weighted_sum += client_weights[i] * prototype
     
+    # 归一化聚合后的原型，保证向量尺度稳定
+    weighted_sum = _l2_normalize_rows(weighted_sum)
     return weighted_sum
 
 
@@ -319,90 +467,3 @@ def validate_prototype_dimensions(prototypes: list, expected_dim: int) -> bool:
             return False
     
     return True
-
-
-if __name__ == "__main__":
-    # 测试损失函数和工具函数
-    import logging
-    logging.basicConfig(level=logging.INFO)
-    
-    # 测试参数
-    batch_size = 4
-    feature_dim = 128
-    
-    # 创建测试数据
-    z_batch = torch.randn(batch_size, feature_dim)
-    mu_local = torch.randn(feature_dim)
-    mu_global = torch.randn(feature_dim)
-    lambda_proto = 0.1
-    
-    # 测试任务损失
-    print("Testing task loss...")
-    task_loss = compute_task_loss(z_batch, mu_local)
-    print(f"Task loss: {task_loss.item():.4f}")
-    
-    # 测试原型对齐损失
-    print("\nTesting prototype alignment loss...")
-    proto_loss = compute_prototype_alignment_loss(mu_local, mu_global)
-    print(f"Prototype alignment loss: {proto_loss.item():.4f}")
-    
-    # 测试总损失
-    print("\nTesting total loss...")
-    total_loss, task_loss_comp, proto_loss_comp = compute_total_loss(
-        z_batch, mu_local, mu_global, lambda_proto
-    )
-    print(f"Total loss: {total_loss.item():.4f}")
-    print(f"Task loss component: {task_loss_comp.item():.4f}")
-    print(f"Prototype loss component: {proto_loss_comp.item():.4f}")
-    
-    # 测试损失函数模块
-    print("\nTesting FedProFiLALoss module...")
-    loss_fn = FedProFiLALoss(lambda_proto=lambda_proto)
-    total_loss_module, task_loss_module, proto_loss_module = loss_fn(z_batch, mu_local, mu_global)
-    print(f"Module total loss: {total_loss_module.item():.4f}")
-    
-    # 测试异常分数计算
-    print("\nTesting anomaly score computation...")
-    anomaly_scores = compute_anomaly_score(z_batch, mu_local)
-    print(f"Anomaly scores shape: {anomaly_scores.shape}")
-    print(f"Anomaly scores: {anomaly_scores}")
-    
-    # 测试模型聚合
-    print("\nTesting model aggregation...")
-    model_states = [
-        {"weight": torch.randn(10, 5), "bias": torch.randn(5)},
-        {"weight": torch.randn(10, 5), "bias": torch.randn(5)},
-        {"weight": torch.randn(10, 5), "bias": torch.randn(5)}
-    ]
-    client_weights = [0.5, 0.3, 0.2]
-    
-    aggregated_state = aggregate_models(model_states, client_weights)
-    print(f"Aggregated state keys: {list(aggregated_state.keys())}")
-    print(f"Aggregated weight shape: {aggregated_state['weight'].shape}")
-    
-    # 测试原型聚合
-    print("\nTesting prototype aggregation...")
-    prototypes = [torch.randn(feature_dim) for _ in range(3)]
-    client_weights = [0.5, 0.3, 0.2]
-    
-    aggregated_prototype = aggregate_prototypes(prototypes, client_weights)
-    print(f"Aggregated prototype shape: {aggregated_prototype.shape}")
-    
-    # 测试全局原型初始化
-    print("\nTesting global prototype initialization...")
-    global_prototype = initialize_global_prototype(feature_dim, torch.device('cpu'))
-    print(f"Initial global prototype shape: {global_prototype.shape}")
-    print(f"Initial global prototype sum: {global_prototype.sum().item()}")
-    
-    # 测试原型维度验证
-    print("\nTesting prototype dimension validation...")
-    valid_prototypes = [torch.randn(feature_dim) for _ in range(3)]
-    invalid_prototypes = [torch.randn(feature_dim), torch.randn(feature_dim + 1), torch.randn(feature_dim)]
-    
-    is_valid = validate_prototype_dimensions(valid_prototypes, feature_dim)
-    print(f"Valid prototypes validation: {is_valid}")
-    
-    is_invalid = validate_prototype_dimensions(invalid_prototypes, feature_dim)
-    print(f"Invalid prototypes validation: {is_invalid}")
-    
-    print("\nAll tests passed!")

@@ -5,6 +5,7 @@ Server Training Loop for Fed-ProFiLA-AD
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 from typing import Dict, List, Tuple, Optional
 import logging
@@ -34,7 +35,8 @@ class Server:
         device: torch.device,
         client_selection_strategy: str = "all",
         client_selection_fraction: float = 1.0,
-        feature_dim: int = 128
+        feature_dim: int = 128,
+        prototype_momentum: float = 0.7
     ):
         """
         初始化服务器
@@ -51,6 +53,7 @@ class Server:
         self.client_selection_strategy = client_selection_strategy
         self.client_selection_fraction = client_selection_fraction
         self.feature_dim = feature_dim
+        self.prototype_momentum = float(max(0.0, min(0.99, prototype_momentum)))
         
         # 初始化全局原型
         self.global_prototype = initialize_global_prototype(feature_dim, device)
@@ -101,7 +104,6 @@ class Server:
         else:
             raise ValueError(f"Unknown client selection strategy: {self.client_selection_strategy}")
         
-        logger.info(f"已选择 {len(selected_clients)} 个客户端: {selected_clients}")
         return selected_clients
     
     def aggregate_models(self, client_models: Dict[str, Dict[str, torch.Tensor]], 
@@ -132,7 +134,6 @@ class Server:
         if filtered_state:
             self.global_model.load_state_dict(filtered_state, strict=False)
         
-        logger.info("全局模型聚合成功")
         return filtered_state
     
     def aggregate_prototypes(self, client_prototypes: Dict[str, torch.Tensor], 
@@ -153,11 +154,17 @@ class Server:
         
         # 聚合原型
         aggregated_prototype = aggregate_prototypes(prototypes, weights)
+        # 进行EMA更新并归一化，稳定训练
+        with torch.no_grad():
+            ema = self.prototype_momentum * self.global_prototype + (1.0 - self.prototype_momentum) * aggregated_prototype
+            self.global_prototype = F.normalize(ema, p=2.0, dim=0)
         
-        # 更新全局原型
-        self.global_prototype = aggregated_prototype
+        # 记录范数
+        try:
+            logger.info(f"Global prototype norm after agg: {torch.norm(self.global_prototype).item():.4f}")
+        except Exception:
+            pass
         
-        logger.info(f"全局原型聚合成功，形状: {self.global_prototype.shape}")
         return aggregated_prototype
     
     def get_global_model_state(self) -> Dict[str, torch.Tensor]:
@@ -308,8 +315,8 @@ class Server:
         try:
             # 评估所有客户端
             eval_results = client_manager.evaluate_clients(
-                global_prototype=self.global_prototype,
-                local_prototypes=client_prototypes
+                global_theta=self.get_global_model_state(),
+                global_mu=self.get_global_prototype()
             )
             
             # 计算平均AUC

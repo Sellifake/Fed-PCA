@@ -22,8 +22,7 @@ def evaluate_client(
     global_prototype: torch.Tensor,
     local_prototype: torch.Tensor,
     device: torch.device,
-    client_id: str = "",
-    device_type_id: int = 0
+    client_id: str = ""
 ) -> Dict[str, float]:
     """
     评估单个客户端
@@ -44,63 +43,29 @@ def evaluate_client(
     all_labels = []
     
     with torch.no_grad():
-        for batch_data in test_loader:
-            # 解包数据（可能是2个或3个值）
-            if len(batch_data) == 3:
-                batch_x, batch_y, _ = batch_data  # 忽略device_type
-            else:
-                batch_x, batch_y = batch_data
+        for batch_x, batch_y in test_loader:
             batch_x = batch_x.to(device)
             global_prototype = global_prototype.to(device)
             local_prototype = local_prototype.to(device)
             
-            # 前向传播获取特征嵌入（使用设备类型ID）
-            device_type_id_tensor = torch.tensor([device_type_id] * batch_x.size(0), 
-                                                 dtype=torch.long, device=device)
-            z_test = model(batch_x, device_type_id_tensor)
+            # 前向传播获取特征嵌入（使用全局原型）
+            z_test = model(batch_x, global_prototype)
             
             # 计算异常分数
             scores = compute_anomaly_score(z_test, local_prototype)
             
-            # 调试信息：检查异常分数分布
-            if len(all_scores) == 0:  # 只在第一个batch打印
-                logger.info(f"[{client_id}] 异常分数调试信息:")
-                logger.info(f"  分数形状: {scores.shape}")
-                logger.info(f"  分数范围: [{scores.min().item():.6f}, {scores.max().item():.6f}]")
-                logger.info(f"  分数均值: {scores.mean().item():.6f}")
-                logger.info(f"  分数标准差: {scores.std().item():.6f}")
-                logger.info(f"  本地原型范数: {torch.norm(local_prototype).item():.6f}")
-                logger.info(f"  特征范数范围: [{torch.norm(z_test, dim=1).min().item():.6f}, {torch.norm(z_test, dim=1).max().item():.6f}]")
-            
             # 收集结果
             all_scores.extend(scores.cpu().numpy())
-            all_labels.extend(batch_y.numpy())
+            all_labels.extend(batch_y.cpu().numpy() if isinstance(batch_y, torch.Tensor) else batch_y)
     
     # 转换为numpy数组
     all_scores = np.array(all_scores)
     all_labels = np.array(all_labels)
     
-    # 调试信息：检查数据分布
-    logger.info(f"[{client_id}] 评估数据统计:")
-    logger.info(f"  总样本数: {len(all_scores)}")
-    logger.info(f"  正常样本数: {np.sum(all_labels == 0)}")
-    logger.info(f"  异常样本数: {np.sum(all_labels == 1)}")
-    logger.info(f"  异常分数范围: [{all_scores.min():.6f}, {all_scores.max():.6f}]")
-    logger.info(f"  异常分数均值: {all_scores.mean():.6f}")
-    logger.info(f"  异常分数标准差: {all_scores.std():.6f}")
-    
-    # 检查分数分布
-    normal_scores = all_scores[all_labels == 0]
-    abnormal_scores = all_scores[all_labels == 1]
-    if len(normal_scores) > 0 and len(abnormal_scores) > 0:
-        logger.info(f"  正常样本分数: 均值={normal_scores.mean():.6f}, 标准差={normal_scores.std():.6f}")
-        logger.info(f"  异常样本分数: 均值={abnormal_scores.mean():.6f}, 标准差={abnormal_scores.std():.6f}")
-    
     # 计算评估指标
     metrics = calculate_all_metrics(all_scores, all_labels)
     
-    # 打印结果
-    print_metrics(metrics, client_id)
+    # 不打印详细结果（简化输出）
     
     return metrics
 
@@ -191,10 +156,8 @@ def compute_anomaly_scores_batch(
         global_prototype = global_prototype.to(device)
         local_prototype = local_prototype.to(device)
         
-        # 前向传播（使用设备类型ID）
-        device_type_id_tensor = torch.tensor([device_type_id] * batch_x.size(0), 
-                                             dtype=torch.long, device=device)
-        z_test = model(batch_x, device_type_id_tensor)
+        # 前向传播（使用全局原型）
+        z_test = model(batch_x, global_prototype)
         
         # 计算异常分数
         scores = compute_anomaly_score(z_test, local_prototype)
@@ -277,10 +240,8 @@ def evaluate_with_different_thresholds(
             global_prototype = global_prototype.to(device)
             local_prototype = local_prototype.to(device)
             
-            # 前向传播（使用设备类型ID）
-            device_type_id_tensor = torch.tensor([device_type_id] * batch_x.size(0), 
-                                                 dtype=torch.long, device=device)
-            z_test = model(batch_x, device_type_id_tensor)
+            # 前向传播（使用全局原型）
+            z_test = model(batch_x, global_prototype)
             scores = compute_anomaly_score(z_test, local_prototype)
             
             all_scores.extend(scores.cpu().numpy())

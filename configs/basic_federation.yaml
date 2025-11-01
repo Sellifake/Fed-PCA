@@ -1,0 +1,54 @@
+# Basic Fed-ProFiLA-AD Configuration (基础版本)
+# 基础联邦学习配置文件
+
+# 数据集配置
+dataset:
+  root_path: "data"
+  sample_rate: 16000
+  segment_length: 4096
+  n_mels: 128
+  hop_length: 512
+  n_fft: 1024
+  max_train_samples: null  # 使用全量训练数据
+  max_test_samples: null   # 使用全量测试数据
+
+# 模型配置
+model:
+  backbone_type: "default"
+  input_channels: 1
+  feature_dim: 128
+  prototype_dim: 128
+  dropout_rate: 0.1
+  hidden_dims: [128, 256, 512]
+
+# 训练配置
+training:
+  batch_size: 32
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  optimizer: "adam"  # "adam", "sgd", "adamw"
+
+# 损失配置（增强对比学习力度）
+loss:
+  lambda_contrastive: 1.0
+  contrastive_margin: 1.0
+  lambda_separation: 0.5
+  separation_margin: 0.8
+  lambda_supcon: 1.0
+  temperature: 0.2
+
+# 联邦学习配置
+federation:
+  num_rounds: 100  # 增加到100轮
+  local_epochs: 3  # 提升本地轮次
+  lambda_proto: 0.01  # 降低到0.01，确保训练稳定
+  client_selection: "all"  # "all" 或 "random"
+  prototype_momentum: 0.7  # 全局原型EMA动量
+
+# 系统配置
+system:
+  device: "cuda"  # 默认GPU（如果可用）
+  seed: 42
+  num_workers: 4
+  pin_memory: true  # GPU时启用
+
