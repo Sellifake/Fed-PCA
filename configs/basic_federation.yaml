@@ -39,7 +39,7 @@ loss:
 
 # 联邦学习配置
 federation:
-  num_rounds: 100  # 增加到100轮
+  num_rounds: 50  # 增加到100轮
   local_epochs: 3  # 提升本地轮次
   lambda_proto: 0.01  # 降低到0.01，确保训练稳定
   client_selection: "all"  # "all" 或 "random"

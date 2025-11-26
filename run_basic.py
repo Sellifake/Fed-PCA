@@ -11,6 +11,8 @@ import logging
 import argparse
 import json
 import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any
@@ -383,6 +385,31 @@ def main():
                 best_path = run_dir / "best_model.pt"
                 torch.save(best_checkpoint, best_path)
                 print(f"  [Checkpoint] New best AUC {best_avg_auc:.4f} at round {round_idx + 1}, saved to: {best_path}")
+            
+            # 每轮保存CSV（实时更新）
+            csv_data = []
+            for metric in training_history['eval_metrics']:
+                row = {
+                    'round': metric['round'],
+                    'avg_auc': metric['avg_auc'],
+                    'avg_f1': metric['avg_f1'],
+                    'avg_precision': metric['avg_precision'],
+                    'avg_recall': metric['avg_recall'],
+                    'avg_loss': metric['avg_loss'],
+                    'avg_task_loss': metric['avg_task_loss'],
+                    'avg_proto_loss': metric['avg_proto_loss']
+                }
+                # 添加每个客户端的指标
+                for client_id, client_metrics in metric['client_metrics'].items():
+                    row[f'{client_id}_auc'] = client_metrics['auc']
+                    row[f'{client_id}_f1'] = client_metrics['f1']
+                    row[f'{client_id}_precision'] = client_metrics['precision']
+                    row[f'{client_id}_recall'] = client_metrics['recall']
+                csv_data.append(row)
+            
+            csv_path = run_dir / "training_history.csv"
+            df = pd.DataFrame(csv_data)
+            df.to_csv(csv_path, index=False)
     
     print("\n" + "="*60)
     print("Training completed!")
@@ -403,6 +430,91 @@ def main():
     history_path = run_dir / "training_history.json"
     with open(history_path, 'w') as f:
         json.dump(training_history, f, indent=2)
+    
+    # 保存训练历史为CSV
+    csv_data = []
+    for metric in training_history['eval_metrics']:
+        row = {
+            'round': metric['round'],
+            'avg_auc': metric['avg_auc'],
+            'avg_f1': metric['avg_f1'],
+            'avg_precision': metric['avg_precision'],
+            'avg_recall': metric['avg_recall'],
+            'avg_loss': metric['avg_loss'],
+            'avg_task_loss': metric['avg_task_loss'],
+            'avg_proto_loss': metric['avg_proto_loss']
+        }
+        # 添加每个客户端的指标
+        for client_id, client_metrics in metric['client_metrics'].items():
+            row[f'{client_id}_auc'] = client_metrics['auc']
+            row[f'{client_id}_f1'] = client_metrics['f1']
+            row[f'{client_id}_precision'] = client_metrics['precision']
+            row[f'{client_id}_recall'] = client_metrics['recall']
+        csv_data.append(row)
+    
+    csv_path = run_dir / "training_history.csv"
+    df = pd.DataFrame(csv_data)
+    df.to_csv(csv_path, index=False)
+    logger.info(f"Training history CSV saved to: {csv_path}")
+    
+    # 绘制loss曲线图
+    if training_history['eval_metrics']:
+        plt.figure(figsize=(12, 8))
+        
+        rounds = [m['round'] for m in training_history['eval_metrics']]
+        
+        # 绘制loss曲线
+        plt.subplot(2, 2, 1)
+        avg_losses = [m['avg_loss'] for m in training_history['eval_metrics']]
+        avg_task_losses = [m['avg_task_loss'] for m in training_history['eval_metrics']]
+        avg_proto_losses = [m['avg_proto_loss'] for m in training_history['eval_metrics']]
+        
+        plt.plot(rounds, avg_losses, 'b-', label='Total Loss', linewidth=2, marker='o', markersize=4)
+        plt.plot(rounds, avg_task_losses, 'r--', label='Task Loss', linewidth=2, marker='s', markersize=4)
+        plt.plot(rounds, avg_proto_losses, 'g--', label='Proto Loss', linewidth=2, marker='^', markersize=4)
+        plt.xlabel('Round', fontsize=12)
+        plt.ylabel('Loss', fontsize=12)
+        plt.title('Training Loss Curves', fontsize=14, fontweight='bold')
+        plt.legend(fontsize=10)
+        plt.grid(True, alpha=0.3)
+        
+        # 绘制AUC曲线
+        plt.subplot(2, 2, 2)
+        avg_aucs = [m['avg_auc'] for m in training_history['eval_metrics']]
+        plt.plot(rounds, avg_aucs, 'b-', label='Average AUC', linewidth=2, marker='o', markersize=4)
+        plt.xlabel('Round', fontsize=12)
+        plt.ylabel('AUC', fontsize=12)
+        plt.title('Average AUC Curve', fontsize=14, fontweight='bold')
+        plt.legend(fontsize=10)
+        plt.grid(True, alpha=0.3)
+        
+        # 绘制F1曲线
+        plt.subplot(2, 2, 3)
+        avg_f1s = [m['avg_f1'] for m in training_history['eval_metrics']]
+        plt.plot(rounds, avg_f1s, 'g-', label='Average F1', linewidth=2, marker='s', markersize=4)
+        plt.xlabel('Round', fontsize=12)
+        plt.ylabel('F1 Score', fontsize=12)
+        plt.title('Average F1 Score Curve', fontsize=14, fontweight='bold')
+        plt.legend(fontsize=10)
+        plt.grid(True, alpha=0.3)
+        
+        # 绘制Precision和Recall
+        plt.subplot(2, 2, 4)
+        avg_precisions = [m['avg_precision'] for m in training_history['eval_metrics']]
+        avg_recalls = [m['avg_recall'] for m in training_history['eval_metrics']]
+        plt.plot(rounds, avg_precisions, 'r-', label='Precision', linewidth=2, marker='^', markersize=4)
+        plt.plot(rounds, avg_recalls, 'm-', label='Recall', linewidth=2, marker='v', markersize=4)
+        plt.xlabel('Round', fontsize=12)
+        plt.ylabel('Score', fontsize=12)
+        plt.title('Precision & Recall Curves', fontsize=14, fontweight='bold')
+        plt.legend(fontsize=10)
+        plt.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plot_path = run_dir / "training_curves.png"
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        logger.info(f"Training curves saved to: {plot_path}")
     
     # 保存配置
     config_path = run_dir / "config.yaml"
